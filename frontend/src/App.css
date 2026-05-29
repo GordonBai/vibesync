@@ -27,6 +27,24 @@
   font-size: 13px;
 }
 
+.backend-banner {
+  margin-left: auto;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.backend-banner.checking {
+  background: rgba(255, 193, 7, 0.15);
+  color: #ffc107;
+}
+
+.backend-banner.disconnected {
+  background: rgba(255, 82, 82, 0.15);
+  color: #ff5252;
+}
+
 .back-button,
 .icon-button {
   width: 42px;
@@ -167,17 +185,17 @@
 }
 
 .agent-filter-icon {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 5px;
-  border: 1px solid #3f414a;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  font-weight: 850;
-  color: #cfd2dd;
   flex: 0 0 auto;
+}
+
+.agent-filter-icon img {
+  border-radius: 3px;
 }
 
 .session-scroll {
@@ -213,23 +231,36 @@
 }
 
 .agent-glyph {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-weight: 800;
   border: 1px solid #3f414a;
-  color: #cfd2dd;
   background: #22242a;
   flex: 0 0 auto;
 }
 
 .agent-glyph.large {
-  width: 34px;
-  height: 34px;
-  font-size: 18px;
+  width: 38px;
+  height: 38px;
+}
+
+.agent-icon-img {
+  border-radius: 4px;
+  display: block;
+}
+
+.agent-glyph-fallback {
+  font-weight: 800;
+  color: #cfd2dd;
+  font-size: 14px;
+}
+
+.app-logo {
+  border-radius: 8px;
+  flex: 0 0 auto;
 }
 
 .agent-glyph.claude {
@@ -615,6 +646,12 @@
   flex: 1;
   flex-direction: column;
   padding: 40px;
+}
+
+.empty-state-logo {
+  border-radius: 12px;
+  margin-bottom: 8px;
+  opacity: 0.9;
 }
 
 .empty-state h3 {

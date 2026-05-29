@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 
-const { ipcRenderer } = window.require ? window.require('electron') : { ipcRenderer: null };
+const vibesync = window.vibesync || null;
 
-const backendUrl = 'http://localhost:8765';
+const DEFAULT_BACKEND_URL = 'http://localhost:8765';
+const FETCH_TIMEOUT_MS = 8000;
+const HEALTH_POLL_INTERVAL_MS = 30000;
+
 const agentOptions = [
-  { key: 'claude', label: 'Claude', fullLabel: 'Claude Code', icon: '✳' },
-  { key: 'codex', label: 'Codex', fullLabel: 'Codex', icon: 'C' },
-  { key: 'antigravity', label: 'Antigravity', fullLabel: 'Antigravity CLI', icon: '◇' },
-  { key: 'opencode', label: 'OpenCode', fullLabel: 'OpenCode', icon: 'O' },
+  { key: 'claude', label: 'Claude', fullLabel: 'Claude Code', icon: 'agents/claude.png' },
+  { key: 'codex', label: 'Codex', fullLabel: 'Codex', icon: 'agents/codex.png' },
+  { key: 'antigravity', label: 'Antigravity', fullLabel: 'Antigravity CLI', icon: 'agents/antigravity.png' },
+  { key: 'opencode', label: 'OpenCode', fullLabel: 'OpenCode', icon: 'agents/opencode.png' },
 ];
 const agentMeta = Object.fromEntries(agentOptions.map((agent) => [agent.key, agent]));
 
@@ -16,13 +19,34 @@ function sessionKey(agent, id) {
   return `${agent}:${id}`;
 }
 
-function agentIcon(agent) {
-  return agentMeta[agent]?.icon || '◌';
+function AgentIcon({ agent, size = 24 }) {
+  const src = agentMeta[agent]?.icon;
+  if (!src) return <span className="agent-glyph-fallback">◌</span>;
+  return (
+    <img
+      src={src}
+      alt={agentLabel(agent, true)}
+      width={size}
+      height={size}
+      className="agent-icon-img"
+    />
+  );
 }
 
 function agentLabel(agent, full = false) {
   const meta = agentMeta[agent];
   return full ? meta?.fullLabel || agent : meta?.label || agent;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function App() {
@@ -37,22 +61,92 @@ function App() {
   const [copiedTarget, setCopiedTarget] = useState(null);
   const [debugTerminal, setDebugTerminal] = useState(null);
   const [debugLoading, setDebugLoading] = useState(false);
+  const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
+  const [backendStatus, setBackendStatus] = useState('checking');
   const detailsRequestRef = useRef(0);
+  const healthTimerRef = useRef(null);
+  const fetchSessionsRef = useRef(null);
+
+  // ── Backend lifecycle ──────────────────────────────────────────────────
+
+  const checkBackendHealth = useCallback(async () => {
+    try {
+      const res = await fetchWithTimeout(`${backendUrl}/api/health`, {}, 4000);
+      if (res.ok) {
+        setBackendStatus('connected');
+        return true;
+      }
+    } catch (err) {
+      console.debug('Backend health check failed:', err);
+    }
+    setBackendStatus('disconnected');
+    return false;
+  }, [backendUrl]);
+
+  const startReconnecting = useCallback(() => {
+    if (healthTimerRef.current) return;
+    const delays = [2000, 4000, 8000, 16000, 30000];
+    let attempt = 0;
+    async function tick() {
+      const ok = await checkBackendHealth();
+      if (ok) {
+        healthTimerRef.current = setTimeout(() => {
+          healthTimerRef.current = null;
+          startReconnecting();
+        }, HEALTH_POLL_INTERVAL_MS);
+        fetchSessionsRef.current?.();
+        return;
+      }
+      attempt++;
+      const delay = delays[Math.min(attempt - 1, delays.length - 1)];
+      healthTimerRef.current = setTimeout(tick, delay);
+    }
+    tick();
+  }, [checkBackendHealth]);
 
   useEffect(() => {
-    fetchSessions();
+    return () => {
+      if (healthTimerRef.current) {
+        clearTimeout(healthTimerRef.current);
+        healthTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // ── Init ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    async function init() {
+      if (vibesync) {
+        try {
+          const url = await vibesync.getBackendUrl();
+          if (url) setBackendUrl(url);
+        } catch (err) {
+          console.debug('Could not read backend URL from Electron preload:', err);
+        }
+      }
+      const ok = await checkBackendHealth();
+      if (ok) {
+        fetchSessions();
+      } else {
+        setLoading(false);
+        startReconnecting();
+      }
+    }
+    init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Session fetching ──────────────────────────────────────────────────
 
   async function fetchSessions() {
     try {
       setLoading(true);
-      const res = await fetch(`${backendUrl}/api/sessions`);
+      const res = await fetchWithTimeout(`${backendUrl}/api/sessions`);
       if (!res.ok) {
         console.error('Failed to fetch sessions');
         return;
       }
-
       const data = await res.json();
       setSessions(data);
       if (data.length > 0) {
@@ -62,12 +156,20 @@ function App() {
         setActiveSession(null);
         setDetailsError('');
       }
+      setBackendStatus('connected');
     } catch (err) {
-      console.error('Error connecting to backend:', err);
+      if (err.name === 'AbortError') {
+        console.error('Sessions request timed out');
+      } else {
+        console.error('Error connecting to backend:', err);
+      }
+      setBackendStatus('disconnected');
+      startReconnecting();
     } finally {
       setLoading(false);
     }
   }
+  fetchSessionsRef.current = fetchSessions;
 
   async function selectSession(agent, id) {
     const requestId = detailsRequestRef.current + 1;
@@ -77,7 +179,7 @@ function App() {
     setDetailsError('');
     setDetailsLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/sessions/${agent}/${id}`);
+      const res = await fetchWithTimeout(`${backendUrl}/api/sessions/${agent}/${id}`);
       if (res.ok) {
         const data = await res.json();
         if (
@@ -96,7 +198,11 @@ function App() {
       }
     } catch (err) {
       if (detailsRequestRef.current === requestId) {
-        setDetailsError(err.message || 'Error fetching session details.');
+        if (err.name === 'AbortError') {
+          setDetailsError('Request timed out — backend may be overloaded.');
+        } else {
+          setDetailsError(err.message || 'Error fetching session details.');
+        }
       }
       console.error('Error fetching session details:', err);
     } finally {
@@ -115,7 +221,7 @@ function App() {
   async function handleQuickCopy(agent, id, e) {
     e.stopPropagation();
     try {
-      const res = await fetch(`${backendUrl}/api/sessions/${agent}/${id}`);
+      const res = await fetchWithTimeout(`${backendUrl}/api/sessions/${agent}/${id}`);
       if (!res.ok) return;
 
       const data = await res.json();
@@ -128,23 +234,22 @@ function App() {
   }
 
   async function detectTerminal() {
-    if (!ipcRenderer) {
+    if (!vibesync) {
       setDebugTerminal({ error: 'IPC not available (running in browser, not Electron).' });
       return;
     }
     setDebugLoading(true);
     setDebugTerminal(null);
     try {
-      const ctx = await ipcRenderer.invoke('detect-terminal');
+      const ctx = await vibesync.detectTerminal();
       if (ctx.error) {
         setDebugTerminal(ctx);
         return;
       }
-      // Try to resolve against backend
       let resolveResult = null;
       if (ctx.cwd || ctx.command) {
         try {
-          const res = await fetch(`${backendUrl}/api/takeover/resolve`, {
+          const res = await fetchWithTimeout(`${backendUrl}/api/takeover/resolve`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ terminalApp: ctx.terminalApp, cwd: ctx.cwd, command: ctx.command }),
@@ -219,20 +324,19 @@ function App() {
   const conversation = activeDetails?.conversation || [];
   const transcriptPath = activeDetails?.metadata?.transcript_path || '';
   const projectPath = activeDetails?.metadata?.project || '';
-  const selectedAgentMeta = agentFilter === 'all'
-    ? { label: 'All agents', fullLabel: 'All coding agents', icon: 'A' }
-    : agentMeta[agentFilter];
-
   return (
     <div className="session-manager-app">
       <header className="manager-topbar">
-        <button className="back-button" title="Back" disabled>
-          ←
-        </button>
+        <img src="app-icon.png" alt="VibeSync" width={32} height={32} className="app-logo" />
         <div>
           <h1>Session Manager</h1>
           <p>Local coding agent handoff</p>
         </div>
+        {backendStatus !== 'connected' && (
+          <div className={`backend-banner ${backendStatus}`}>
+            {backendStatus === 'checking' ? 'Connecting to backend...' : 'Backend connection lost. Reconnecting...'}
+          </div>
+        )}
       </header>
 
       <div className="manager-shell">
@@ -256,7 +360,13 @@ function App() {
           />
 
           <label className="agent-filter" htmlFor="agent-filter">
-            <span className={`agent-filter-icon ${agentFilter}`}>{selectedAgentMeta?.icon}</span>
+            <span className={`agent-filter-icon ${agentFilter}`}>
+              {agentFilter === 'all' ? (
+                <img src="app-icon.png" alt="VibeSync" width={18} height={18} className="agent-icon-img" />
+              ) : (
+                <AgentIcon agent={agentFilter} size={18} />
+              )}
+            </span>
             <select
               id="agent-filter"
               value={agentFilter}
@@ -273,10 +383,23 @@ function App() {
           </label>
 
           <div className="session-scroll">
-            {loading ? (
+            {loading && backendStatus !== 'disconnected' ? (
               <div className="loading-block">
                 <div className="spinner"></div>
                 <span>Loading sessions...</span>
+              </div>
+            ) : backendStatus === 'checking' ? (
+              <div className="loading-block">
+                <div className="spinner"></div>
+                <span>Starting backend...</span>
+              </div>
+            ) : backendStatus === 'disconnected' ? (
+              <div className="empty-panel">
+                <h3>Backend Unavailable</h3>
+                <p>Check that Python 3 is installed and the VibeSync backend can start.</p>
+                <button className="primary-action" onClick={fetchSessions}>
+                  Retry Connection
+                </button>
               </div>
             ) : filteredSessions.length > 0 ? (
               filteredSessions.map((session) => {
@@ -290,7 +413,7 @@ function App() {
                   >
                     <div className="session-card-main">
                       <span className={`agent-glyph ${session.agent}`} title={agentLabel(session.agent, true)}>
-                        {agentIcon(session.agent)}
+                        <AgentIcon agent={session.agent} size={20} />
                       </span>
                       <div className="session-card-copy">
                         <h2>{shortTitle(session)}</h2>
@@ -319,7 +442,7 @@ function App() {
             )}
           </div>
 
-          {ipcRenderer && (
+          {vibesync && (
             <div className="debug-panel">
               <button
                 className="debug-detect-button"
@@ -391,7 +514,21 @@ function App() {
         </aside>
 
         <main className="conversation-panel">
-          {detailsLoading ? (
+          {backendStatus === 'checking' ? (
+            <div className="loading-block full">
+              <div className="spinner"></div>
+              <span>Starting backend...</span>
+            </div>
+          ) : backendStatus === 'disconnected' ? (
+            <div className="empty-state">
+              <img src="app-icon.png" alt="VibeSync" width={48} height={48} className="empty-state-logo" />
+              <h3>Backend Connection Lost</h3>
+              <p>VibeSync is attempting to reconnect automatically.</p>
+              <button className="primary-action" onClick={fetchSessions}>
+                Reconnect Now
+              </button>
+            </div>
+          ) : detailsLoading ? (
             <div className="loading-block full">
               <div className="spinner"></div>
               <span>Preparing local takeover view...</span>
@@ -414,7 +551,7 @@ function App() {
               <section className="session-detail-header">
                 <div className="detail-title-row">
                   <span className={`agent-glyph large ${activeDetails.metadata.agent}`}>
-                    {agentIcon(activeDetails.metadata.agent)}
+                    <AgentIcon agent={activeDetails.metadata.agent} size={28} />
                   </span>
                   <div className="detail-title-copy">
                     <h2>{shortTitle(activeDetails.metadata) || 'Active Workspace Session'}</h2>
@@ -517,6 +654,7 @@ function App() {
             </>
           ) : (
             <div className="empty-state">
+              <img src="app-icon.png" alt="VibeSync" width={48} height={48} className="empty-state-logo" />
               <h3>No Sessions Loaded</h3>
               <p>Start the VibeSync backend and make sure local coding agent sessions exist.</p>
               <button className="primary-action" onClick={fetchSessions}>

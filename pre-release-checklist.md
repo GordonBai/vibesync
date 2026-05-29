@@ -1,344 +1,322 @@
 # VibeSync Pre-Release Checklist
 
-## Architecture Overview
+Last updated: 2026-05-29
 
-```
-vibesync/
-├── backend/
-│   ├── app.py                # HTTP server (stdlib http.server, port 8765)
-│   ├── parser.py             # 4-agent session index + resolve + takeover prompt
-│   └── tests/                # 15 parser + 4 app tests (unittest)
-├── frontend/
-│   ├── main-electron.cjs     # Electron main: tray, window, globalShortcut, IPC
-│   ├── terminal-context.cjs  # macOS host detection (3 terminals, 4 IDEs)
-│   ├── hotkey-sync.cjs       # Hotkey flow (DI pattern, testable)
-│   ├── diagnose-hotkey.cjs   # CLI dry-run diagnostic
-│   ├── src/
-│   │   ├── App.jsx           # React Session Manager UI
-│   │   ├── App.css           # Session UI styles (flat dark theme)
-│   │   ├── main.jsx          # React entry point
-│   │   └── index.css         # Global styles (gradient premium theme)
-│   └── tests/                # 20 terminal-context + 9 hotkey-sync tests
-├── README.md
-├── TODO.md
-└── pre-release-checklist.md  # ← this file
-```
+## Release Goal
 
-### Data Flow
+Ship a macOS-only local coding-agent handoff utility.
 
-```
-Cmd+Shift+C press
-  → Electron globalShortcut
-    → getFocusedTerminalContext()       [terminal-context.cjs]
-      → AppleScript frontmost app
-      → host definition lookup
-      → tty / cwd-strategy / accessibility window title
-      → process-tree walk + agent filter
-      → returns { hostKind, cwd, command, confidence }
-    → POST /api/takeover/resolve         [backend app.py]
-      → resolve_session_for_context()    [parser.py]
-      → agent-scoped cwd match
-      → returns { session, reason, confidence }
-    → GET /api/sessions/:agent/:id       [backend app.py]
-      → get_session_details()            [parser.py]
-      → generates takeover_prompt
-      → returns { metadata, takeover_prompt, conversation, ... }
-    → clipboard.writeText(takeover_prompt)
-    → tray feedback + native notification
-```
+Core promise:
 
----
+1. User works in a supported terminal or IDE terminal.
+2. User presses `Cmd+Shift+C`.
+3. VibeSync detects the focused host, resolves the active local coding agent session, and copies a takeover prompt.
+4. If anything cannot be resolved, VibeSync fails visibly and never copies a random/latest session.
 
-## BLOCKING (must fix before GitHub release)
+Supported agents for v1:
 
-### 1. Electron App Packaging (zip for GitHub Releases)
+- Claude Code
+- Codex
+- Antigravity CLI
+- OpenCode
 
-- [ ] **Electron production build**: `npm run desktop` currently uses Vite dev server + `--dev` flag. Users can't run this.
-  - Add `"build:desktop": "vite build && electron-builder --dir"` to produce `.app` bundle without DMG
-  - Add `"package:zip": "vite build && electron-builder --mac --publish=never"` to produce zip
-  - Use `electron-builder` with config in `package.json`:
-    ```json
-    "build": {
-      "appId": "com.vibesync.app",
-      "productName": "VibeSync",
-      "mac": { "target": "zip", "category": "public.app-category.developer-tools" },
-      "files": ["dist/**/*", "main-electron.cjs", "terminal-context.cjs", "hotkey-sync.cjs", "public/**/*", "package.json"]
-    }
-    ```
-  - Backend Python files don't go inside the .app bundle — they live in the repo. Document: "clone repo, `pip install`, then run VibeSync.app"
-  - OR: bundle backend inside .app Resources and spawn from there
-- [ ] **App icon**: Tray uses `public/favicon.svg` (tiny). Need proper `.icns` for Dock/About/Finder.
-  - Generate 1024x1024 PNG → use `iconutil` or online converter → place at `build/icon.icns`
-  - Configure in electron-builder: `"icon": "build/icon.icns"`
-- [ ] **GitHub Release workflow**: Document manual release steps or add CI:
-  - `npm run build && npm run package:zip`
-  - Upload zip to GitHub Releases with tag `v1.0.0`
-  - Attach README section: "Download → unzip → right-click Open (Gatekeeper warning on first launch)"
+Supported hosts for v1:
 
-### 2. Backend Lifecycle Management
+- Ghostty
+- iTerm2
+- Terminal.app
+- VS Code
+- Cursor
+- Windsurf
+- JetBrains IDEs
 
-- [ ] **Auto-start backend from Electron**: User currently runs `python3 backend/app.py` in separate terminal.
-  - Spawn `python3` child process from `main-electron.cjs` on `app.whenReady()`
-  - Resolve backend path relative to app: `path.join(__dirname, '..', 'backend', 'app.py')`
-  - Kill child on `will-quit` with SIGTERM, force kill after 3s timeout
-  - Show backend status in tray tooltip: "VibeSync · backend running" / "VibeSync · backend stopped"
-- [ ] **Backend health check**: Poll `/api/health` on startup every 500ms with 10s timeout.
-  - Add `backendStatus` state in App.jsx: `starting | connected | error`
-  - Show spinner + "Starting backend..." instead of empty "No Sessions Loaded"
-  - If health check fails after 10s, show error with "The backend failed to start. Check that Python 3 is installed."
-- [ ] **Port conflict handling**: If 8765 is taken, try 8766, 8767... up to 8770.
-  - Pass selected port to Electron renderer via IPC so App.jsx uses correct `backendUrl`
-  - Show notification: "Port 8765 in use, using 8766"
+## Current Status
 
-### 3. Error Resilience
+Implemented:
 
-- [ ] **Backend unreachable recovery**: Add auto-retry with backoff when backend connection drops.
-  - App.jsx: show "Backend connection lost. Reconnecting..." banner at top
-  - Retry every 2s, 4s, 8s, max 30s
-  - Tray icon: green dot (connected) / yellow dot (connecting) / red dot (error > 30s)
-- [ ] **Request timeouts**: All frontend `fetch` calls lack timeout.
-  - Add `AbortController` with 8s timeout on every API call
-  - On timeout, show "Request timed out — backend may be overloaded"
+- [x] 4-agent backend parser and session detail API.
+- [x] `takeover_prompt` is now the primary handoff artifact.
+- [x] Agent-scoped `/api/takeover/resolve`.
+- [x] Electron auto-starts backend and exposes backend URL through preload.
+- [x] `contextIsolation: true`, `nodeIntegration: false`.
+- [x] Focused host detector and process-tree agent resolver.
+- [x] `Cmd+Shift+C` copies the focused terminal session takeover prompt.
+- [x] Manual Session Manager picker remains available.
+- [x] Tray/menu-bar feedback now changes immediately on hotkey trigger:
+  - busy while resolving
+  - check on success
+  - x on failure
+  - resets after 2 seconds
+- [x] Vite dev server now uses strict port `5173` to avoid Electron loading a stale dev server.
 
-### 4. Security
+Latest verification run:
 
-- [ ] **`contextIsolation: true` + preload script**: Currently `false`, `nodeIntegration: true`.
-  - Create `preload.cjs` with `contextBridge.exposeInMainWorld('vibesync', { detectTerminal: () => ipcRenderer.invoke('detect-terminal') })`
-  - Set `contextIsolation: true`, `nodeIntegration: false`, `preload: path.join(__dirname, 'preload.cjs')`
-  - App.jsx: replace `window.require('electron')` with `window.vibesync`
-- [ ] **Backend bind address**: Already `127.0.0.1` (localhost only). Document this as intentional security boundary.
+- [x] `cd frontend && npm run lint`
+- [x] `cd frontend && npm run test`
+- [x] `cd frontend && npm run build`
+- [x] `python3 -m unittest discover backend/tests`
 
----
+## Blocking Before Public Release
 
-## HIGH PRIORITY (should fix before GitHub release)
+### 1. Clean Dev Runtime State
 
-### 5. GitHub-Ready Polish
+- [ ] Ensure no stale VibeSync dev processes are left running before packaging:
+  - `lsof -nP -iTCP:5173 -sTCP:LISTEN`
+  - `lsof -nP -iTCP:8765 -sTCP:LISTEN`
+  - `ps -eo pid=,ppid=,command= | rg 'vibesync|vite|backend/app.py|Electron.*frontend'`
+- [ ] Confirm `npm run desktop` fails clearly if `5173` is occupied.
+- [ ] Confirm Electron loads the intended dev server URL, not an older Vite instance.
 
-- [ ] **README rewrite**: Current README is a Vite template. Needs full rewrite:
-  - What VibeSync does (one-liner + 2-3 sentence description)
-  - Supported coding agents (Claude Code, Codex, Antigravity, OpenCode)
-  - Supported terminals/IDEs (Ghostty, iTerm2, Terminal.app, VS Code, Cursor, Windsurf, JetBrains)
-  - Installation: `git clone` + `cd vibesync && pip install -r backend/requirements.txt && cd frontend && npm install`
-  - Usage: `python3 backend/app.py` + run VibeSync.app, then `Cmd+Shift+C` in any supported terminal
-  - Requirements: macOS 14+ (Sonoma), Python 3.10+, Node.js 20+
-  - Screenshots section (placeholder — add after UI is final)
-  - Link to GitHub Releases for downloading the `.app` zip
-- [ ] **LICENSE file**: Add `LICENSE` (MIT) at repo root
-- [ ] **`.gitignore` audit**: Ensure `node_modules/`, `dist/`, `__pycache__/`, `.env`, `*.log`, `out/` (electron-builder output) are ignored
-- [ ] **`.gitattributes`**: Add `* text=auto` for consistent line endings across macOS/Windows clones
-- [ ] **Remove dead assets before release**:
-  - `public/icons.svg` — Bluesky, Discord, GitHub, X social icons, unused
-  - `src/assets/hero.png`, `src/assets/react.svg`, `src/assets/vite.svg` — Vite template leftovers
-  - `frontend/README.md` — Vite template boilerplate, replace with project-specific docs
-- [ ] **Google Fonts offline**: `index.css` imports Inter, Outfit, Fira Code via `@import url()` — blocks render. Remove `@import` and use system font stack fallback (`system-ui, -apple-system` already in `var(--sans)`)
+### 2. Manual Hotkey QA Matrix
 
-### 6. Accessibility Permission Flow
+Run these manually on a real macOS desktop session. Automated keyboard simulation can be blocked by macOS Accessibility, so human keypress QA is required.
 
-- [ ] **Electron permission prompt**: `accessibilityDenied` flag is returned from context but never acted upon
-  - On first IDE host detection, if `accessibilityDenied: true`, show tray notification with "Enable Accessibility" button
-  - Use `systemPreferences.isTrustedAccessibilityClient(true)` to trigger system dialog
-  - Add setting to re-prompt if user dismissed
-- [ ] **Debug panel permission indicator**: Show "Accessibility: Denied / Granted" in the debug output
-- [ ] **Fallback messaging**: When Accessibility denied on IDE host, hotkey notification should add "Grant Accessibility for better IDE workspace detection"
+- [ ] Ghostty + Claude Code + matching workspace -> `Cmd+Shift+C` copies Claude takeover prompt.
+- [ ] Ghostty + Antigravity CLI + matching workspace -> copies Antigravity takeover prompt.
+- [ ] iTerm2 + Claude Code -> copies matching takeover prompt.
+- [ ] Terminal.app + Codex -> copies matching takeover prompt.
+- [ ] VS Code integrated terminal + supported agent -> copies matching takeover prompt.
+- [ ] Cursor integrated terminal + supported agent -> copies matching takeover prompt.
+- [ ] Unsupported app focused -> tray shows failure quickly, clipboard is not overwritten with a latest-session fallback.
+- [ ] Supported terminal with only shell/no agent -> tray shows failure quickly, clipboard is not overwritten.
+- [ ] Backend unavailable -> tray shows failure quickly and notification explains backend issue.
+- [ ] Multiple matching sessions -> no clipboard write; user is told to use VibeSync UI.
 
-### 7. UI Polish
+For every successful case, paste the clipboard into a scratch buffer and confirm:
 
-- [ ] **Design system unification**: `index.css` uses gradient premium theme (Outfit/Inter fonts, purple/cyan/pink accents), `App.css` uses flat dark theme (`#1f1f22`, `#27272c`)
-  - The two CSS files define completely different color schemes and visual languages
-  - Pick one system and apply consistently throughout
-  - The `index.css` system is more polished; migrate App.css to use its variables
-- [ ] **Window resize**: Fixed 1180x768, `resizable: false`. On 13" MacBook (1440x900 effective), this is tight
-  - Make window resizable or at minimum allow 100px height increase
-  - Test on 13" / 14" / 16" MacBook screens
-- [ ] **Debug panel visibility**: Debug panel is always shown when `ipcRenderer` exists (i.e., always in Electron). Should be hidden behind a flag or collapsed by default
-  - Add "Debug" toggle in tray context menu
-  - Or hold Option key to reveal
-- [ ] **Window positioning**: `alignWindowWithTray()` uses `tray.getBounds()` which can be off-screen on multi-monitor setups or when menu bar is hidden
-  - Add bounds checking: clamp x/y to visible screen area
+- `Source agent` matches the actual CLI.
+- `Workspace` matches the focused terminal project.
+- `Source transcript` points to the expected local session file.
+- `Reading protocol` is present.
 
-### 8. Session Management Edge Cases
+### 3. Clipboard Safety
 
-- [ ] **Session deletion**: No way to delete/forget a session from the UI
-  - Add "Forget" button in session detail header (danger-action style)
-  - Deleting transcript file is destructive — confirm dialog needed
-- [ ] **Empty conversation display**: Shows "No conversation preview is available" — this is OK but could show the first/last prompt even without full history
-- [ ] **Very large transcripts**: Content truncated at 4000 chars per turn. Add indicator showing "Showing first 4000 of N chars"
-- [ ] **Session list pagination**: `list_all_sessions` limits to 20. If user has >20 sessions, older ones are invisible
-  - Add "Show more" / pagination or load on scroll
+- [ ] Add or manually verify a sentinel clipboard test:
+  1. Put `VIBESYNC_SENTINEL` in clipboard.
+  2. Focus unsupported app.
+  3. Press `Cmd+Shift+C`.
+  4. Confirm clipboard still contains `VIBESYNC_SENTINEL`.
+- [ ] Repeat sentinel test for:
+  - unsupported command
+  - missing cwd
+  - backend 404 no-match
+  - backend 409 ambiguous-match
 
-### 9. Cross-Agent Edge Cases
+This is a release blocker because the product must not copy the wrong session.
 
-- [ ] **Agent process dies mid-detection**: If `lsof` or `ps` runs on a PID that just exited, it fails silently (returns empty). The current code handles this gracefully but could add explicit PID liveness check
-- [ ] **Same agent, two instances in different workspaces**: Currently triggers ambiguity error. Could show a quick picker in a small popup window from the tray
-- [ ] **Agent not in `COMMAND_MAP`**: Falls through to raw command name. Should log warning for unknown agents so we can add them later
+### 4. Notifications And Tray Feedback
 
----
+- [ ] Confirm tray icon state changes with low latency:
+  - default -> busy immediately after hotkey
+  - busy -> check/x immediately after completion
+  - check/x -> default after ~2 seconds
+- [ ] Confirm macOS native notifications appear when notifications are allowed.
+- [ ] Confirm tray feedback still works when native notifications are disabled.
+- [ ] Confirm tray icon has no white square background on light and dark menu bars.
 
-## MEDIUM PRIORITY (nice to have for v1.0)
+### 5. Accessibility Permission Flow
 
-### 10. Cross-Platform Foundation
+Current state: IDE detection can work through process tree, but better workspace disambiguation may require Accessibility.
 
-- [ ] **Document macOS-only status**: README should clearly state "macOS only (Sonoma+)"
-- [ ] **Platform guards in code**: `process.platform === 'darwin'` checks exist for tray/dock but not for terminal-context
-  - Add early return in `getFocusedTerminalContext()` for non-macOS: `return { error: 'macOS required for terminal detection' }`
-- [ ] **Windows/Linux research spike**: What would it take to add Windows Terminal / VS Code detection on Windows? WSL detection? Document as future work
+Before release, either implement a permission flow or document the limitation clearly.
 
-### 11. Configuration & Persistence
+- [ ] Decide v1 behavior:
+  - Option A: implement permission prompt with `systemPreferences.isTrustedAccessibilityClient(true)`.
+  - Option B: explicitly document that IDE workspace detection is best-effort unless Accessibility is granted.
+- [ ] If Option A:
+  - [ ] Show one-time prompt when IDE host returns `accessibilityDenied`.
+  - [ ] Add debug output for Accessibility granted/denied.
+  - [ ] Add troubleshooting copy for System Settings -> Privacy & Security -> Accessibility.
+- [ ] If Option B:
+  - [ ] Add README troubleshooting section.
+  - [ ] Add in-app message when `accessibilityDenied` is true.
 
-- [ ] **User preferences file**: Store in `~/.vibesync/config.json` or Electron `app.getPath('userData')`
-  - Backend port
-  - Launch on login
-  - Accessibility permission acknowledged
-  - Last selected agent filter
-- [ ] **Backend port configuration**: Currently hardcoded to 8765 in:
-  - `hotkey-sync.cjs` → `DEFAULT_BACKEND_URL`
-  - `App.jsx` → `backendUrl`
-  - `diagnose-hotkey.cjs` → defaults to env var
-  - Should be single source of truth (config file or env var)
+### 6. Packaged App QA
 
-### 12. Logging & Diagnostics
+- [ ] Run `cd frontend && npm run build:desktop`.
+- [ ] Launch the generated `.app` from `frontend/dist/mac*` or builder output.
+- [ ] Confirm packaged app starts backend from bundled `extraResources`.
+- [ ] Confirm packaged app does not depend on Vite.
+- [ ] Confirm `Cmd+Shift+C` works in packaged app.
+- [ ] Confirm tray icon images are included in packaged app.
+- [ ] Confirm agent icons and app icon are included.
+- [ ] Run `cd frontend && npm run package:zip`.
+- [ ] Install from the zip on a clean macOS user account or separate machine if possible.
 
-- [ ] **File logging**: Replace `console.log` with file-based logger in Electron main process
-  - Log to `~/Library/Logs/VibeSync/` (macOS standard)
-  - Log terminal detection attempts, resolve results, errors
-- [ ] **In-app log viewer**: Add "View Logs" option in tray context menu or debug panel
-- [ ] **Crash reporting**: At minimum, catch unhandled rejections and log stack traces
+### 7. Repository Hygiene
 
-### 13. Code Quality
+- [ ] Add or verify root `.gitignore` covers:
+  - `node_modules/`
+  - `frontend/dist/`
+  - `frontend/out/`
+  - `frontend/.vite/`
+  - `__pycache__/`
+  - `.DS_Store`
+  - `*.log`
+  - local screenshots/temp artifacts
+- [ ] Add `LICENSE` before public release.
+- [ ] Add `.gitattributes` with `* text=auto`.
+- [ ] Decide whether generated assets belong in git:
+  - app icon
+  - tray template icons
+  - agent icons
+  - packaged artifacts should not be committed
+- [ ] Remove or intentionally document obsolete/deleted Vite template files.
 
-- [ ] **Run and fix linter**: `npm run lint` passes with 0 warnings
-- [ ] **Add `.editorconfig`** for consistent formatting
-- [ ] **Consider TypeScript migration path**: At minimum, add JSDoc types to `terminal-context.cjs` and `hotkey-sync.cjs`
+### 8. README Rewrite
 
-### 14. Startup Experience
+The README should be release-ready before GitHub publication.
 
-- [ ] **Launch on login**: Add `app.setLoginItemSettings({ openAtLogin: true })` with tray toggle
-- [ ] **First-run experience**: If no sessions exist and no coding agents detected:
-  - Show onboarding tooltip: "Start Claude Code, Codex, Antigravity CLI, or OpenCode in your terminal, then press Cmd+Shift+C"
-  - Link to agent installation guides
+Required sections:
 
----
+- [ ] What VibeSync does.
+- [ ] Demo workflow:
+  - start Claude/Codex/etc. in terminal A
+  - press `Cmd+Shift+C`
+  - paste into another local coding agent in terminal B
+- [ ] Supported agents.
+- [ ] Supported terminal and IDE hosts.
+- [ ] macOS-only requirement.
+- [ ] Installation from release zip.
+- [ ] Development setup:
+  - backend tests
+  - frontend tests
+  - `npm run desktop`
+- [ ] Permissions and troubleshooting:
+  - global shortcut conflict
+  - notification permissions
+  - Accessibility for IDE detection
+  - backend port conflicts
+  - no matching session found
+- [ ] Security note:
+  - local-only backend on `127.0.0.1`
+  - transcript paths are local
+  - no web-agent/cloud upload handoff
 
-## LOW PRIORITY (post v1.0)
+## Should Fix Before v1 If Time Allows
 
-### 15. Advanced Features
+### 9. Hotkey Diagnostics Panel
 
-- [ ] **In-app session picker popup**: When ambiguity detected (409), show a small popup near the tray with candidate list instead of just notification
-- [ ] **Session search across transcripts**: Search within conversation content, not just titles
-- [ ] **Takeover prompt customization**: Let user choose what to include (git status, commands, files, full transcript vs. summary)
-- [ ] **Multi-monitor support**: Test and fix window alignment on multi-monitor setups
-- [ ] **Keyboard navigation**: Full keyboard accessibility for session list (arrow keys, Enter to select, Escape to close)
-- [ ] **Agent process health indicator**: Show green/yellow dot in tray when supported agent is detected in active host
+This is the most valuable next improvement.
 
-### 16. Docs & Community
+- [ ] Add `lastHotkeyEvent` state in Electron main:
+  - timestamp
+  - stage
+  - focused host
+  - cwd
+  - command
+  - matched agent/session
+  - result
+  - error reason
+- [ ] Expose it through preload IPC.
+- [ ] Show it in Session Manager debug panel.
+- [ ] Add tray menu item: `Show Last Hotkey Result`.
 
-- [ ] **Developer documentation**: How to add a new coding agent (registry entry, parser, tests)
-- [ ] **Changelog**: `CHANGELOG.md` with semantic versioning
-- [ ] **Screenshots in README**: Tray icon, Session Manager UI, notification examples
-- [ ] **Troubleshooting guide**: Common issues (backend not running, accessibility denied, terminal not detected)
+This will make future user reports much easier to debug than “I pressed the shortcut and nothing happened.”
 
-### 17. CI/CD
+### 10. Better Error Copy
 
-- [ ] **GitHub Actions**: Run `npm test` + `python3 -m unittest` on push
-- [ ] **macOS runner**: Tests require macOS (AppleScript) — must use `macos-latest` or mock AppleScript calls
-- [ ] **Automated build**: Build and zip Electron app on tag push, attach to GitHub Release
+- [ ] Replace generic backend errors with user-facing categories:
+  - shortcut not registered
+  - unsupported focused app
+  - supported host but no coding agent process
+  - cwd unavailable
+  - no matching session
+  - multiple matching sessions
+  - transcript unreadable
+  - backend unavailable
+- [ ] Keep developer details in logs, not in main notification text.
 
----
+### 11. Electron Logs
+
+- [ ] Add file logging under `~/Library/Logs/VibeSync/`.
+- [ ] Log:
+  - app startup
+  - backend port chosen
+  - shortcut registration result
+  - each hotkey stage
+  - resolver result
+  - errors with stack traces
+- [ ] Add tray menu item: `Open Logs`.
+
+### 12. UI Polish
+
+- [ ] Hide or collapse the debug panel by default.
+- [ ] Make dashboard window resizable or at least more tolerant of 13" MacBook screens.
+- [ ] Clamp tray window positioning to the active display bounds.
+- [ ] Verify layout at:
+  - 1280 x 800
+  - 1440 x 900
+  - 1728 x 1117
+  - external monitor with menu bar.
+- [ ] Confirm long session titles do not visually imply the wrong agent.
+
+### 13. Session List Scale
+
+- [ ] Add pagination or “show more”; current list can hide older sessions if parser limit is too low.
+- [ ] Show counts by agent.
+- [ ] Add empty states per agent:
+  - no Claude sessions found
+  - no Codex sessions found
+  - no OpenCode data directory found
+
+## Post-v1
+
+- [ ] In-app candidate picker when backend returns ambiguous `409`.
+- [ ] User preferences:
+  - launch at login
+  - default dashboard visibility
+  - remembered filter/search
+  - notification preference
+- [ ] Search inside transcript previews.
+- [ ] More terminal hosts.
+- [ ] Windows/Linux research.
+- [ ] GitHub Actions:
+  - backend tests
+  - frontend tests
+  - build on macOS runner
+  - release zip on tag.
+- [ ] TypeScript or JSDoc type pass for Electron modules.
 
 ## Test Coverage Summary
 
+Current automated coverage:
+
 | Layer | Tests | Status |
-|-------|-------|--------|
-| Backend parser | 15 | All pass |
-| Backend app (resolve) | 4 | All pass |
-| Frontend terminal-context | 20 | All pass |
-| Frontend hotkey-sync | 9 | All pass |
-| **Total** | **48** | **All pass** |
+| --- | ---: | --- |
+| Backend parser | 15 | Pass |
+| Backend app / resolve helpers | 4 | Pass |
+| Frontend terminal-context | 20 | Pass |
+| Frontend hotkey-sync | 8+ | Pass |
+| React UI | 0 | Manual only |
+| Electron main runtime | 0 | Manual only |
 
-### Missing Test Coverage
+Required before public release:
 
-- [ ] **Electron main process**: No tests for tray creation, window management, shortcut registration
-  - These are hard to unit test (require Electron runtime) — at minimum add manual test script
-- [ ] **End-to-end integration**: No test that spawns backend + runs diagnose-hotkey + verifies prompt content
-  - `diagnose-hotkey.cjs` is the closest but not an automated test
-- [ ] **App.jsx React components**: No component tests (React Testing Library or similar)
-- [ ] **Backend HTTP server**: `test_app.py` tests `resolve_takeover_payload` directly but not the HTTP handler
-  - Add `http.client` tests against a running server instance
+- [ ] Keep all existing automated tests passing.
+- [ ] Add at least one scripted integration check that starts backend and calls `/api/health`.
+- [ ] Keep manual hotkey QA results in release notes or `testing-guide.md`.
 
----
+## Release Command Checklist
 
-## Manual QA Checklist
+From a clean working tree:
 
-### Hotkey Smoke Test
+```bash
+python3 -m unittest discover backend/tests
+cd frontend
+npm install
+npm run lint
+npm run test
+npm run build
+npm run build:desktop
+npm run package:zip
+```
 
-- [ ] Ghostty + Claude Code → `Cmd+Shift+C` → takeover prompt copied, tray shows `✓`
-- [ ] iTerm2 + Claude Code → `Cmd+Shift+C` → takeover prompt copied
-- [ ] Terminal.app + Codex → `Cmd+Shift+C` → takeover prompt copied
-- [ ] Ghostty + zsh (no agent) → `Cmd+Shift+C` → error notification, tray shows `✗`
-- [ ] Unsupported app (Chrome, Finder) focused → `Cmd+Shift+C` → error notification
-- [ ] Backend not running → `Cmd+Shift+C` → "Backend unreachable" notification
+Manual after packaging:
 
-### IDE Smoke Test
+- [ ] Open packaged app.
+- [ ] Confirm tray icon appears.
+- [ ] Confirm backend starts.
+- [ ] Confirm `Cmd+Shift+C` works from a real supported terminal.
+- [ ] Confirm failure states are visible and do not overwrite clipboard.
 
-- [ ] VS Code + integrated terminal with Claude Code → `Cmd+Shift+C` → takeover prompt copied
-- [ ] VS Code + no agent running → `Cmd+Shift+C` → "No coding agent detected in IDE" notification
-- [ ] VS Code + Accessibility granted → window title workspace used for cwd matching
-- [ ] VS Code + Accessibility denied → `accessibilityDenied: true` in debug output, still works via process tree
-
-### UI Smoke Test
-
-- [ ] Tray icon appears on app launch
-- [ ] Left-click tray → window appears, aligned below tray
-- [ ] Click outside window → window hides
-- [ ] Right-click tray → context menu (Toggle Dashboard, Sync Context Now, Quit)
-- [ ] Session list loads all 4 agent types
-- [ ] Agent filter dropdown filters correctly
-- [ ] Search filters by title, project, agent name
-- [ ] Click session → conversation preview loads
-- [ ] Copy Takeover Prompt button works
-- [ ] Copy Transcript Path button works
-- [ ] Quick Copy button in session list works
-- [ ] Debug "Detect Current Terminal" shows correct host/cwd/command
-- [ ] Refresh button reloads session list
-- [ ] Window closes cleanly (no process left behind)
-
-### Backend Smoke Test
-
-- [ ] `python3 backend/app.py` starts without errors
-- [ ] `curl http://localhost:8765/api/health` returns `{"status": "healthy"}`
-- [ ] `curl http://localhost:8765/api/sessions` returns session list
-- [ ] `curl http://localhost:8765/api/sessions/claude/<sid>` returns details with takeover_prompt
-- [ ] `curl -X POST http://localhost:8765/api/takeover/resolve -H 'Content-Type: application/json' -d '{"cwd":"/path","command":"claude"}'` returns 200 or 404
-- [ ] Ctrl+C cleanly shuts down server
-
----
-
-## Summary
-
-| Category | Items | Blocking |
-|----------|-------|----------|
-| Packaging & Distribution | 4 | 4 |
-| Backend Lifecycle | 3 | 3 |
-| Error Resilience | 3 | 3 |
-| Security Hardening | 2 | 2 |
-| GitHub-Ready Polish | 6 | 0 |
-| Accessibility Flow | 3 | 0 |
-| UI Polish | 4 | 0 |
-| Session Edge Cases | 4 | 0 |
-| Cross-Agent Edge Cases | 3 | 0 |
-| Cross-Platform | 3 | 0 |
-| Configuration | 2 | 0 |
-| Logging | 3 | 0 |
-| Code Quality | 3 | 0 |
-| Startup Experience | 2 | 0 |
-| Advanced Features | 6 | 0 |
-| Docs & Community | 4 | 0 |
-| CI/CD | 3 | 0 |
-| Test Coverage Gaps | 4 | 0 |
-| Manual QA | 22 | 0 |
-
-**Blocking items: 12**  
-**High priority: 20**  
-**Medium priority: 14**  
-**Low priority: 16**  
-**Total: 62 checklist items**

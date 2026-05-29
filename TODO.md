@@ -371,6 +371,18 @@ Runtime evidence gathered:
       can prompt the user to grant assistive access.
     - `accessibilityDenied` is `undefined` for terminal hosts and unsupported hosts (no noise).
 
+12. **Ghostty tty isolation + findHostPids fix** (2026-05-28)
+    - **Bug**: Pressing `Cmd+Shift+C` in a Ghostty tab with no coding agent showed ✓ (success) instead of ✗ (error). Two root causes:
+      1. Ghostty had no `ttyStrategy` — fell through to host-process-tree which walks ALL tabs/windows. If another tab had a coding agent in the same cwd, it was incorrectly matched.
+      2. `findHostPids` used `ps -eo pid=,comm=` which shows only the executable basename (e.g. `Ghostty`), but the grep pattern looked for `Ghostty\\.app/`. This failed on macOS where `comm=` doesn't include the .app bundle path.
+    - **Fixes applied**:
+      - Added `ttyStrategy: 'ghostty'` to Ghostty HOST_DEFINITIONS — queries tty via AppleScript (`tty of focused terminal of selected tab of front window`)
+      - Added Ghostty tty handler in `getTerminalTty()` — returns the tty device path for the focused terminal
+      - Changed `findHostPids` grep from `comm=` to `command=` — `command=` includes the full executable path with `.app/` bundle segment
+      - Moved `usedFocusedTty = true` before `findProcessesOnTty` check — blocks host-process-tree fallback whenever tty is available, even if tty returns empty
+      - Changed `focusedCwd` assignment from `tty ? '' : getFocusedWorkingDirectory(host)` to always call `getFocusedWorkingDirectory(host)` — cwd is now always populated for display and error messages
+    - **Result**: Ghostty now uses tty-based process isolation (same as iTerm2/Terminal.app). Only processes on the focused tab's tty are considered. Cross-tab cwd matches no longer cause false positives. `findHostPids` now reliably finds .app processes on all macOS versions.
+
 ### Decisions Made
 
 1. Support Ghostty + iTerm2 + Terminal.app (not Ghostty-only).
@@ -389,6 +401,11 @@ Runtime evidence gathered:
 7. `extractWorkspaceFromWindowTitle` handles JetBrains differently from Electron IDEs:
    JetBrains project is the first title segment; Electron IDEs (VS Code/Cursor/Windsurf)
    use the last non-file-like segment (right-to-left scan, skipping file extensions).
+8. Ghostty now uses tty-based process isolation (`ttyStrategy: 'ghostty'`) instead of
+   falling through to host-process-tree. `usedFocusedTty` is set true whenever tty is
+   available, blocking the host-process-tree fallback and preventing cross-tab false
+   matches. `findHostPids` uses `command=` (full path) instead of `comm=` (basename only)
+   for reliable .app bundle detection across macOS versions.
 
 ## Open Questions
 

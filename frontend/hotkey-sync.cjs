@@ -1,6 +1,7 @@
 const SUPPORTED_AGENT_COMMANDS = new Set(['claude', 'codex', 'antigravity', 'opencode']);
 
 const DEFAULT_BACKEND_URL = 'http://localhost:8765';
+const TRAY_BUSY = ' … ';
 const TRAY_SUCCESS = ' ✓ ';
 const TRAY_ERROR = ' ✗ ';
 
@@ -19,11 +20,14 @@ async function syncFocusedTerminalContextToClipboard(deps) {
     getFocusedTerminalContext,
     writeClipboard,
     showTrayFeedback,
+    showTrayProgress = showTrayFeedback,
     showErrorNotification,
     logger = console,
   } = deps;
 
   try {
+    showTrayProgress(TRAY_BUSY, 'Resolving focused terminal...');
+
     const context = await getFocusedTerminalContext();
 
     if (context.error) {
@@ -145,5 +149,6 @@ module.exports = {
   _private: {
     TRAY_SUCCESS,
     TRAY_ERROR,
+    TRAY_BUSY,
   },
 };

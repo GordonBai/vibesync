@@ -48,6 +48,9 @@ function makeDeps({ context, fetches = [] }) {
       showTrayFeedback(icon, tooltip) {
         state.tray.push({ icon, tooltip });
       },
+      showTrayProgress(icon, tooltip) {
+        state.tray.push({ icon, tooltip, progress: true });
+      },
       showErrorNotification(message) {
         state.errors.push(message);
       },
@@ -87,6 +90,9 @@ test('successful focused terminal sync writes takeover prompt to clipboard', asy
   assert.equal(JSON.parse(state.fetchCalls[0].options.body).command, 'claude');
   assert.equal(state.fetchCalls[1].url, 'http://test-backend/api/sessions/claude/sid-1');
   assert.equal(state.notifications.at(-1).title, 'VibeSync takeover prompt copied');
+  assert.equal(state.tray[0].progress, true);
+  assert.match(state.tray[0].tooltip, /Resolving focused terminal/);
+  assert.match(state.tray.at(-1).tooltip, /Copied Claude Code prompt/);
 });
 
 test('focused host error notifies and does not touch backend or clipboard', async () => {
@@ -202,7 +208,8 @@ test('IDE host with unsupported command shows IDE-specific messages', async () =
   assert.deepEqual(state.clipboard, []);
   assert.equal(state.notifications[0].title, 'No coding agent detected in IDE');
   assert.match(state.notifications[0].body, /integrated terminal/);
-  assert.match(state.tray[0].tooltip, /No coding agent detected in IDE/);
+  assert.equal(state.tray[0].progress, true);
+  assert.match(state.tray.at(-1).tooltip, /No coding agent detected in IDE/);
 });
 
 test('IDE host with missing cwd shows IDE-specific messages', async () => {
@@ -221,7 +228,8 @@ test('IDE host with missing cwd shows IDE-specific messages', async () => {
   assert.equal(result.reason, 'missing-cwd');
   assert.deepEqual(state.clipboard, []);
   assert.match(state.notifications[0].body, /workspace directory/);
-  assert.match(state.tray[0].tooltip, /IDE workspace/);
+  assert.equal(state.tray[0].progress, true);
+  assert.match(state.tray.at(-1).tooltip, /IDE workspace/);
 });
 
 test('terminal host with unsupported command still shows terminal-specific messages', async () => {
