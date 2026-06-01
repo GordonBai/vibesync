@@ -1,6 +1,11 @@
 {
   "name": "vibesync",
+  "private": true,
   "version": "1.0.0",
+  "description": "Local coding agent context handoff for Claude Code, Codex, Antigravity CLI, and OpenCode.",
+  "author": "VibeSync contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/GordonBai/vibesync",
   "type": "module",
   "main": "main-electron.cjs",
   "scripts": {
@@ -31,6 +36,7 @@
       "hotkey-sync.cjs",
       "diagnose-hotkey.cjs",
       "preload.cjs",
+      "logger.cjs",
       "public/**/*",
       "package.json"
     ],

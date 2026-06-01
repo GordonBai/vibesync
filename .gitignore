@@ -1,0 +1,50 @@
+# ── Node / Frontend ─────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/out/
+frontend/.vite/
+frontend/release/
+
+# Vite / Electron build cache
+.cache/
+.parcel-cache/
+
+# ── Python / Backend ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Editor & OS ─────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Logs & Local Data ───────────────────────────────────────────────
+*.log
+logs/
+.env
+.env.local
+.env.*.local
+
+# ── Electron Packager Output ────────────────────────────────────────
+# (electron-builder writes to frontend/dist/ by default; covered above,
+# but keep explicit in case config moves)
+*.app/
+*.dmg
+*.zip.blockmap
+mac/
+mac-arm64/
+mac-universal/
+
+# ── Local screenshots / scratch ─────────────────────────────────────
+*.local
+scratch/
+tmp/

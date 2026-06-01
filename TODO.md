@@ -1,5 +1,12 @@
 # TODO: Context-Aware Terminal Hotkey Takeover
 
+> **Status: Feature complete (2026-05-29).** All 12 implementation items below
+> are shipped, the IDE accessibility flow is wired into both Electron main and
+> the React debug panel, and the supporting test suite is at 60 automated
+> tests (40 frontend + 20 backend). Remaining `Open Questions` items have been
+> moved into [pre-release-checklist.md](pre-release-checklist.md) for tracking
+> as release polish, not blocking new feature work.
+
 ## Goal
 
 Make `Cmd+Shift+C` copy the takeover prompt for the coding agent session that belongs to the currently focused terminal pane/window.
@@ -409,10 +416,14 @@ Runtime evidence gathered:
 
 ## Open Questions
 
-- Do we want to add a permission-bootstrap flow in the Electron tray/app that prompts
+- ~~Do we want to add a permission-bootstrap flow in the Electron tray/app that prompts
   the user to grant Accessibility access to VibeSync (or their terminal) for IDE window
-  title detection? The `accessibilityDenied` flag is already wired into the context result.
+  title detection?~~ **Resolved 2026-05-29:** the React debug panel detects
+  `accessibilityDenied` (via the new `checkAccessibility` IPC) and surfaces a
+  "Grant Accessibility Access" button that calls `systemPreferences.isTrustedAccessibilityClient(true)`.
+  IDE-host hotkey notifications now also recommend granting access.
 - Do we want to add an in-app picker for unsupported or unmatched terminal/IDE contexts?
+  (Tracked in pre-release-checklist Post-v1; not blocking initial release.)
 
 Recommended defaults:
 

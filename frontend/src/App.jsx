@@ -63,6 +63,9 @@ function App() {
   const [debugLoading, setDebugLoading] = useState(false);
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [backendStatus, setBackendStatus] = useState('checking');
+  const [debugExpanded, setDebugExpanded] = useState(false);
+  const [lastHotkeyEvent, setLastHotkeyEvent] = useState(null);
+  const [accessibilityTrusted, setAccessibilityTrusted] = useState(null);
   const detailsRequestRef = useRef(0);
   const healthTimerRef = useRef(null);
   const fetchSessionsRef = useRef(null);
@@ -111,6 +114,39 @@ function App() {
         healthTimerRef.current = null;
       }
     };
+  }, []);
+
+  // ── Hotkey event + accessibility status from Electron ──────────────────
+
+  useEffect(() => {
+    if (!vibesync) return undefined;
+
+    let cancelled = false;
+
+    // Pull initial state on mount.
+    vibesync.getLastHotkeyEvent?.().then((event) => {
+      if (!cancelled) setLastHotkeyEvent(event);
+    }).catch(() => {});
+
+    vibesync.checkAccessibility?.().then((res) => {
+      if (!cancelled && res) setAccessibilityTrusted(res.trusted);
+    }).catch(() => {});
+
+    // Subscribe to live updates pushed by main process.
+    const unsubscribe = vibesync.onHotkeyEvent?.((event) => {
+      setLastHotkeyEvent(event);
+    });
+
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, []);
+
+  const requestAccessibility = useCallback(async () => {
+    if (!vibesync?.requestAccessibility) return;
+    const res = await vibesync.requestAccessibility();
+    if (res) setAccessibilityTrusted(res.trusted);
   }, []);
 
   // ── Init ───────────────────────────────────────────────────────────────
@@ -444,70 +480,158 @@ function App() {
 
           {vibesync && (
             <div className="debug-panel">
-              <button
-                className="debug-detect-button"
-                onClick={detectTerminal}
-                disabled={debugLoading}
-              >
-                {debugLoading ? 'Detecting...' : 'Detect Current Terminal'}
-              </button>
-              {debugTerminal && (
-                <div className="debug-output">
-                  {debugTerminal.error && !debugTerminal.terminalApp && (
-                    <div className="debug-row error">{debugTerminal.error}</div>
+              <div className="debug-panel-header">
+                <button
+                  className="debug-toggle"
+                  onClick={() => setDebugExpanded((v) => !v)}
+                  title={debugExpanded ? 'Hide debug panel' : 'Show debug panel'}
+                  aria-expanded={debugExpanded}
+                >
+                  <span>{debugExpanded ? '▾' : '▸'} Debug</span>
+                  {lastHotkeyEvent && (
+                    <span className={`debug-pill ${lastHotkeyEvent.ok ? 'ok' : 'fail'}`}>
+                      {lastHotkeyEvent.ok ? '✓ last' : '✗ last'}
+                    </span>
                   )}
-                  {debugTerminal.terminalApp && (
-                    <>
-                      <div className="debug-row">
-                        <span>app</span><code>{debugTerminal.terminalApp}</code>
+                </button>
+              </div>
+              {debugExpanded && (
+                <>
+                  <button
+                    className="debug-detect-button"
+                    onClick={detectTerminal}
+                    disabled={debugLoading}
+                  >
+                    {debugLoading ? 'Detecting...' : 'Detect Current Terminal'}
+                  </button>
+
+                  {accessibilityTrusted === false && (
+                    <div className="debug-accessibility-warning">
+                      <strong>Accessibility access denied.</strong>
+                      <p>
+                        IDE workspace detection works best when System Events can read window
+                        titles. Grant access to make multi-window IDE matching reliable.
+                      </p>
+                      <button className="debug-accessibility-button" onClick={requestAccessibility}>
+                        Grant Accessibility Access
+                      </button>
+                    </div>
+                  )}
+
+                  {lastHotkeyEvent && (
+                    <div className="debug-output">
+                      <div className="debug-section-label">Last hotkey</div>
+                      <div className={`debug-row ${lastHotkeyEvent.ok ? '' : 'warn'}`}>
+                        <span>status</span>
+                        <code>{lastHotkeyEvent.ok ? '✓ success' : `✗ ${lastHotkeyEvent.reason}`}</code>
                       </div>
-                      {debugTerminal.error ? (
-                        <div className="debug-row warn">{debugTerminal.error}</div>
-                      ) : (
-                        <>
-                          <div className="debug-row">
-                            <span>cwd</span><code>{debugTerminal.cwd || 'unknown'}</code>
-                          </div>
-                          <div className="debug-row">
-                            <span>command</span><code>{debugTerminal.command || 'unknown'}</code>
-                          </div>
-                          <div className="debug-row">
-                            <span>confidence</span><code>{debugTerminal.confidence}</code>
-                          </div>
-                          <div className="debug-row">
-                            <span>source</span><code>{debugTerminal.source}</code>
-                          </div>
-                        </>
+                      {lastHotkeyEvent.host && (
+                        <div className="debug-row">
+                          <span>host</span>
+                          <code>{lastHotkeyEvent.host}{lastHotkeyEvent.hostKind ? ` (${lastHotkeyEvent.hostKind})` : ''}</code>
+                        </div>
                       )}
-                      {debugTerminal.resolve && (
+                      {lastHotkeyEvent.cwd && (
+                        <div className="debug-row">
+                          <span>cwd</span>
+                          <code>{lastHotkeyEvent.cwd}</code>
+                        </div>
+                      )}
+                      {lastHotkeyEvent.command && (
+                        <div className="debug-row">
+                          <span>command</span>
+                          <code>{lastHotkeyEvent.command}</code>
+                        </div>
+                      )}
+                      {lastHotkeyEvent.agent && (
+                        <div className="debug-row">
+                          <span>agent</span>
+                          <code>{lastHotkeyEvent.agent}</code>
+                        </div>
+                      )}
+                      {lastHotkeyEvent.completedAt && (
+                        <div className="debug-row">
+                          <span>at</span>
+                          <code>{new Date(lastHotkeyEvent.completedAt).toLocaleTimeString()}</code>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {debugTerminal && (
+                    <div className="debug-output">
+                      <div className="debug-section-label">Detected terminal</div>
+                      {debugTerminal.error && !debugTerminal.terminalApp && (
+                        <div className="debug-row error">{debugTerminal.error}</div>
+                      )}
+                      {debugTerminal.terminalApp && (
                         <>
-                          <div className="debug-divider" />
-                          {debugTerminal.resolve.session ? (
+                          <div className="debug-row">
+                            <span>app</span><code>{debugTerminal.terminalApp}</code>
+                          </div>
+                          {debugTerminal.error ? (
+                            <div className="debug-row warn">{debugTerminal.error}</div>
+                          ) : (
                             <>
                               <div className="debug-row">
-                                <span>matched</span>
-                                <code>
-                                  {debugTerminal.resolve.session.agent}/
-                                  {debugTerminal.resolve.session.id.slice(0, 12)}...
-                                </code>
+                                <span>cwd</span><code>{debugTerminal.cwd || 'unknown'}</code>
                               </div>
                               <div className="debug-row">
-                                <span>reason</span><code>{debugTerminal.resolve.reason}</code>
+                                <span>command</span><code>{debugTerminal.command || 'unknown'}</code>
                               </div>
                               <div className="debug-row">
-                                <span>confidence</span><code>{debugTerminal.resolve.confidence}</code>
+                                <span>confidence</span><code>{debugTerminal.confidence}</code>
                               </div>
+                              <div className="debug-row">
+                                <span>source</span><code>{debugTerminal.source}</code>
+                              </div>
+                              {debugTerminal.accessibilityDenied && (
+                                <div className="debug-row warn">
+                                  <span>accessibility</span><code>denied</code>
+                                </div>
+                              )}
                             </>
-                          ) : (
-                            <div className="debug-row warn">
-                              {debugTerminal.resolve.error || `HTTP ${debugTerminal.resolve.status}`}
-                            </div>
+                          )}
+                          {debugTerminal.resolve && (
+                            <>
+                              <div className="debug-divider" />
+                              {debugTerminal.resolve.session ? (
+                                <>
+                                  <div className="debug-row">
+                                    <span>matched</span>
+                                    <code>
+                                      {debugTerminal.resolve.session.agent}/
+                                      {debugTerminal.resolve.session.id.slice(0, 12)}...
+                                    </code>
+                                  </div>
+                                  <div className="debug-row">
+                                    <span>reason</span><code>{debugTerminal.resolve.reason}</code>
+                                  </div>
+                                  <div className="debug-row">
+                                    <span>confidence</span><code>{debugTerminal.resolve.confidence}</code>
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="debug-row warn">
+                                  {debugTerminal.resolve.error || `HTTP ${debugTerminal.resolve.status}`}
+                                </div>
+                              )}
+                            </>
                           )}
                         </>
                       )}
-                    </>
+                    </div>
                   )}
-                </div>
+
+                  {vibesync.openLogs && (
+                    <button
+                      className="debug-detect-button debug-secondary"
+                      onClick={() => vibesync.openLogs()}
+                    >
+                      Open Logs Folder
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}

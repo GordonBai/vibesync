@@ -257,6 +257,24 @@ lsof -nP -iTCP:8765 -sTCP:LISTEN
 
 Grant Accessibility permission to VibeSync in **System Settings -> Privacy & Security -> Accessibility**, then restart the app.
 
+You can also click **Detect Current Terminal** in the dashboard's debug panel.
+If permission has not been granted, the panel shows an in-app **Grant Accessibility Access** button that pops the macOS system prompt directly — no need to navigate Settings manually the first time.
+
+### Inspecting Logs
+
+VibeSync writes a structured log to `~/Library/Logs/VibeSync/vibesync.log` (rotated at 2 MB to `vibesync.log.1`). Each line is timestamped and tagged with one of three channels: `main`, `backend`, or `hotkey`.
+
+The fastest way to open the folder:
+
+- Right-click the menu bar icon → **Open Logs Folder**, or
+- Open the dashboard, expand the debug panel, and click **Open Logs Folder**.
+
+When reporting issues, attach the most recent lines from `vibesync.log` so maintainers can see the full host detection + resolve trace.
+
+### Reviewing The Last Hotkey Result
+
+Right-click the menu bar icon → **Show Last Hotkey Result** for a one-shot dialog that lists exactly what VibeSync detected: focused host, working directory, command, the matched agent/session, and the failure reason if it didn't copy. The same data appears live in the dashboard debug panel.
+
 ## Privacy And Security
 
 - VibeSync reads local coding-agent session files from your home directory.

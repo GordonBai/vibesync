@@ -48,13 +48,28 @@ Implemented:
   - x on failure
   - resets after 2 seconds
 - [x] Vite dev server now uses strict port `5173` to avoid Electron loading a stale dev server.
+- [x] File logger writes to `~/Library/Logs/VibeSync/vibesync.log` with size-based
+  rotation; tray menu and debug panel both expose "Open Logs Folder".
+- [x] `lastHotkeyEvent` diagnostics: tray menu `Show Last Hotkey Result` dialog
+  and live-updating debug panel show host, cwd, command, agent, and result.
+- [x] Accessibility permission bootstrap: debug panel detects `accessibilityDenied`
+  and offers a `Grant Accessibility Access` button that drives
+  `systemPreferences.isTrustedAccessibilityClient(true)`.
+- [x] Clipboard sentinel safety tests cover all 8 known failure paths plus the
+  positive control. Pre-existing clipboard contents are never overwritten on
+  failure.
+- [x] Backend integration smoke test spawns the real `python3 backend/app.py`
+  on an ephemeral port and asserts `/api/health`, `/api/sessions`, and
+  `/api/takeover/resolve` respond as documented.
+- [x] Root `.gitignore` covers Node, Python, editor, OS, and Electron-builder
+  output. Root `.gitattributes` enforces consistent text/binary handling.
 
 Latest verification run:
 
 - [x] `cd frontend && npm run lint`
-- [x] `cd frontend && npm run test`
+- [x] `cd frontend && npm run test`  *(40 tests passing)*
 - [x] `cd frontend && npm run build`
-- [x] `python3 -m unittest discover backend/tests`
+- [x] `python3 -m unittest discover backend/tests`  *(20 tests passing)*
 
 ## Blocking Before Public Release
 
@@ -91,12 +106,18 @@ For every successful case, paste the clipboard into a scratch buffer and confirm
 
 ### 3. Clipboard Safety
 
-- [ ] Add or manually verify a sentinel clipboard test:
+- [x] Automated sentinel coverage in `frontend/tests/clipboard-sentinel.test.cjs`:
+  - host error, missing cwd, unsupported command
+  - backend 404 no-match, 409 ambiguous, 5xx
+  - missing `takeover_prompt` in details payload
+  - details fetch failure
+  - positive control verifies the mock clipboard mutates on success
+- [ ] Manual sentinel verification before tagging the release:
   1. Put `VIBESYNC_SENTINEL` in clipboard.
   2. Focus unsupported app.
   3. Press `Cmd+Shift+C`.
   4. Confirm clipboard still contains `VIBESYNC_SENTINEL`.
-- [ ] Repeat sentinel test for:
+- [ ] Repeat manual sentinel test for:
   - unsupported command
   - missing cwd
   - backend 404 no-match
@@ -116,20 +137,19 @@ This is a release blocker because the product must not copy the wrong session.
 
 ### 5. Accessibility Permission Flow
 
-Current state: IDE detection can work through process tree, but better workspace disambiguation may require Accessibility.
+Implemented 2026-05-29 (Option A):
 
-Before release, either implement a permission flow or document the limitation clearly.
-
-- [ ] Decide v1 behavior:
-  - Option A: implement permission prompt with `systemPreferences.isTrustedAccessibilityClient(true)`.
-  - Option B: explicitly document that IDE workspace detection is best-effort unless Accessibility is granted.
-- [ ] If Option A:
-  - [ ] Show one-time prompt when IDE host returns `accessibilityDenied`.
-  - [ ] Add debug output for Accessibility granted/denied.
-  - [ ] Add troubleshooting copy for System Settings -> Privacy & Security -> Accessibility.
-- [ ] If Option B:
-  - [ ] Add README troubleshooting section.
-  - [ ] Add in-app message when `accessibilityDenied` is true.
+- [x] When the debug panel mounts in Electron, it calls `vibesync.checkAccessibility()`
+  via preload. If the result is `{ trusted: false }`, an in-panel notice
+  appears with a `Grant Accessibility Access` button.
+- [x] The button invokes `systemPreferences.isTrustedAccessibilityClient(true)`,
+  which triggers the macOS system prompt the first time and silently confirms
+  trust on subsequent calls.
+- [x] `accessibilityDenied` is shown in the "Detected terminal" debug rows so
+  the user can correlate IDE detection failures with permission state.
+- [x] README troubleshooting section documents the permission requirement.
+- [ ] (Optional polish) Add a one-shot tray notification on the very first
+  IDE-host hotkey if `accessibilityDenied` is true.
 
 ### 6. Packaged App QA
 
@@ -145,23 +165,23 @@ Before release, either implement a permission flow or document the limitation cl
 
 ### 7. Repository Hygiene
 
-- [ ] Add or verify root `.gitignore` covers:
+- [x] Root `.gitignore` covers:
   - `node_modules/`
-  - `frontend/dist/`
-  - `frontend/out/`
+  - `frontend/dist/`, `frontend/out/`
   - `frontend/.vite/`
   - `__pycache__/`
   - `.DS_Store`
   - `*.log`
   - local screenshots/temp artifacts
-- [ ] Add `LICENSE` before public release.
-- [ ] Add `.gitattributes` with `* text=auto`.
+- [x] Root `LICENSE` (MIT) committed.
+- [x] Root `.gitattributes` with `* text=auto` plus per-extension overrides.
 - [ ] Decide whether generated assets belong in git:
-  - app icon
-  - tray template icons
-  - agent icons
-  - packaged artifacts should not be committed
-- [ ] Remove or intentionally document obsolete/deleted Vite template files.
+  - app icon (kept — referenced by README)
+  - tray template icons (kept — bundled into .app)
+  - agent icons (kept — referenced by UI)
+  - packaged artifacts (zip/dmg) should not be committed — covered by `.gitignore`
+- [x] Vite/React template leftovers removed (`frontend/README.md`,
+  `src/assets/{hero.png,react.svg,vite.svg}`, `public/icons.svg`).
 
 ### 8. README Rewrite
 
@@ -197,22 +217,20 @@ Required sections:
 
 ### 9. Hotkey Diagnostics Panel
 
-This is the most valuable next improvement.
+Implemented 2026-05-29.
 
-- [ ] Add `lastHotkeyEvent` state in Electron main:
-  - timestamp
-  - stage
-  - focused host
-  - cwd
-  - command
-  - matched agent/session
-  - result
-  - error reason
-- [ ] Expose it through preload IPC.
-- [ ] Show it in Session Manager debug panel.
-- [ ] Add tray menu item: `Show Last Hotkey Result`.
-
-This will make future user reports much easier to debug than “I pressed the shortcut and nothing happened.”
+- [x] `lastHotkeyEvent` state tracked in `main-electron.cjs`:
+  - timestamp (started/completed)
+  - host + hostKind
+  - cwd, command
+  - matched agent/sessionId/project
+  - result (`ok`) and reason
+  - accessibilityDenied flag
+- [x] Exposed via preload: `vibesync.getLastHotkeyEvent()` and live
+  `vibesync.onHotkeyEvent(callback)`.
+- [x] Shown in Session Manager debug panel (collapsible).
+- [x] Tray menu item: `Show Last Hotkey Result` opens a `dialog.showMessageBox`
+  with the full payload.
 
 ### 10. Better Error Copy
 
@@ -229,15 +247,19 @@ This will make future user reports much easier to debug than “I pressed the sh
 
 ### 11. Electron Logs
 
-- [ ] Add file logging under `~/Library/Logs/VibeSync/`.
-- [ ] Log:
-  - app startup
-  - backend port chosen
-  - shortcut registration result
-  - each hotkey stage
-  - resolver result
-  - errors with stack traces
-- [ ] Add tray menu item: `Open Logs`.
+Implemented 2026-05-29.
+
+- [x] File logger at `frontend/logger.cjs` writes to
+  `~/Library/Logs/VibeSync/vibesync.log` with 2 MB size-based rotation
+  (`vibesync.log.1`).
+- [x] Three named channels — `main`, `backend`, `hotkey` — surface in the log
+  prefix. Errors include stack traces.
+- [x] All `console.*` calls in `main-electron.cjs` migrated to the structured
+  logger. Backend stdout/stderr is captured into the `backend` channel.
+- [x] Tray menu item: `Open Logs Folder` and debug-panel button both call
+  `shell.openPath(logger.getLogDir())`.
+- [x] `VIBESYNC_LOG_QUIET=1` silences the console mirror so test runs and
+  headless environments are not noisy.
 
 ### 12. UI Polish
 
@@ -280,21 +302,26 @@ This will make future user reports much easier to debug than “I pressed the sh
 
 ## Test Coverage Summary
 
-Current automated coverage:
+Current automated coverage (all passing):
 
 | Layer | Tests | Status |
 | --- | ---: | --- |
 | Backend parser | 15 | Pass |
 | Backend app / resolve helpers | 4 | Pass |
-| Frontend terminal-context | 20 | Pass |
-| Frontend hotkey-sync | 8+ | Pass |
-| React UI | 0 | Manual only |
+| Backend HTTP smoke (subprocess + curl) | 1 | Pass |
+| Frontend terminal-context | 19 | Pass |
+| Frontend hotkey-sync | 9 | Pass |
+| Frontend clipboard sentinel | 9 | Pass |
+| Frontend logger (rotation, error stacks) | 3 | Pass |
+| React UI components | 0 | Manual only |
 | Electron main runtime | 0 | Manual only |
+| **Total automated** | **60** | **All pass** |
 
 Required before public release:
 
-- [ ] Keep all existing automated tests passing.
-- [ ] Add at least one scripted integration check that starts backend and calls `/api/health`.
+- [x] All existing automated tests pass.
+- [x] Scripted integration check that starts backend and calls `/api/health`
+  (covered by `backend/tests/test_smoke.py`).
 - [ ] Keep manual hotkey QA results in release notes or `testing-guide.md`.
 
 ## Release Command Checklist

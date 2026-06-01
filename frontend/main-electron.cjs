@@ -1,9 +1,14 @@
-const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, Notification, nativeImage, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, globalShortcut, clipboard, Notification, nativeImage, ipcMain, shell, systemPreferences, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 const { getFocusedTerminalContext } = require('./terminal-context.cjs');
 const { syncFocusedTerminalContextToClipboard: syncHotkeyContextToClipboard } = require('./hotkey-sync.cjs');
+const logger = require('./logger.cjs');
+
+const mainLog = logger.main;
+const backendLog = logger.backend;
+const hotkeyLog = logger.hotkey;
 
 let tray = null;
 let window = null;
@@ -14,6 +19,7 @@ let backendPort = 8765;
 let backendReady = false;
 let trayUsesTitleFallback = false;
 let trayImages = {};
+let lastHotkeyEvent = null;
 
 const TRAY_READY = ' ⚡ ';
 const TRAY_BUSY = ' … ';
@@ -125,16 +131,16 @@ function killBackend() {
 async function startBackend() {
   const port = await findAvailablePort(BACKEND_START_PORT, BACKEND_MAX_PORT);
   if (!port) {
-    console.error('No available port found for backend');
+    mainLog.error('No available port found for backend');
     return false;
   }
   backendPort = port;
   if (port !== BACKEND_START_PORT) {
-    console.log(`Port ${BACKEND_START_PORT} in use, using ${port}`);
+    mainLog.info(`Port ${BACKEND_START_PORT} in use, using ${port}`);
   }
 
   const backendPath = resolveBackendPath();
-  console.log(`Starting backend: python3 ${backendPath} --port ${backendPort}`);
+  mainLog.info(`Starting backend: python3 ${backendPath} --port ${backendPort}`);
 
   backendProcess = spawn('python3', [backendPath, '--port', String(backendPort)], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -142,19 +148,19 @@ async function startBackend() {
   });
 
   backendProcess.stdout.on('data', (data) => {
-    console.log(`[backend] ${data.toString().trim()}`);
+    backendLog.info(data.toString().trim());
   });
   backendProcess.stderr.on('data', (data) => {
-    console.error(`[backend] ${data.toString().trim()}`);
+    backendLog.error(data.toString().trim());
   });
   backendProcess.on('close', (code) => {
-    console.log(`Backend exited with code ${code}`);
+    mainLog.info(`Backend exited with code ${code}`);
     backendReady = false;
     backendProcess = null;
     updateTrayTooltip();
   });
   backendProcess.on('error', (err) => {
-    console.error('Failed to start backend:', err.message);
+    mainLog.error('Failed to start backend:', err.message);
     backendReady = false;
     backendProcess = null;
     updateTrayTooltip();
@@ -166,13 +172,13 @@ async function startBackend() {
     await new Promise((r) => setTimeout(r, HEALTH_CHECK_INTERVAL_MS));
     if (await healthCheck(backendPort)) {
       backendReady = true;
-      console.log(`Backend healthy on port ${backendPort}`);
+      mainLog.info(`Backend healthy on port ${backendPort}`);
       updateTrayTooltip();
       return true;
     }
   }
 
-  console.error('Backend did not become healthy within timeout');
+  mainLog.error('Backend did not become healthy within timeout');
   updateTrayTooltip();
   return false;
 }
@@ -212,13 +218,13 @@ function createWindow() {
 
   if (isDev) {
     const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-    console.log('⚡ Running in DEV mode, loading dev server:', devServerUrl);
+    mainLog.info('⚡ Running in DEV mode, loading dev server:', devServerUrl);
     window.loadURL(devServerUrl);
   } else {
     const indexPath = path.join(__dirname, 'dist', 'index.html');
-    console.log('📦 Running in PRODUCTION mode, loading built files from:', indexPath);
+    mainLog.info('📦 Running in PRODUCTION mode, loading built files from:', indexPath);
     window.loadFile(indexPath).catch(err => {
-      console.error('Failed to load production index.html. Did you run "npm run build"?', err);
+      mainLog.error('Failed to load production index.html. Did you run "npm run build"?', err);
     });
   }
 
@@ -236,9 +242,9 @@ function createTray() {
     trayImages = loadTrayImages();
     tray = new Tray(trayImages[TRAY_STATUS.ready]);
     trayUsesTitleFallback = false;
-    console.log('Tray status icons loaded from', path.join(__dirname, 'public'));
+    mainLog.info('Tray status icons loaded from', path.join(__dirname, 'public'));
   } catch (err) {
-    console.warn('⚠️ Failed to load status bar icon image, using empty fallback...', err);
+    mainLog.warn('Failed to load status bar icon image, using empty fallback:', err);
     const emptyImage = nativeImage.createEmpty();
     tray = new Tray(emptyImage);
     trayUsesTitleFallback = true;
@@ -260,9 +266,16 @@ function createTray() {
       accelerator: 'CommandOrControl+Shift+C',
       click: () => syncFocusedTerminalContextToClipboard()
     },
+    { type: 'separator' },
     {
-      type: 'separator'
+      label: 'Show Last Hotkey Result',
+      click: () => showLastHotkeyResultDialog()
     },
+    {
+      label: 'Open Logs Folder',
+      click: () => shell.openPath(logger.getLogDir())
+    },
+    { type: 'separator' },
     {
       label: 'Quit VibeSync',
       role: 'quit',
@@ -318,16 +331,96 @@ function alignWindowWithTray() {
 }
 
 async function syncFocusedTerminalContextToClipboard() {
-  return syncHotkeyContextToClipboard({
+  // Initialize the event record before the resolver runs so we capture the
+  // start timestamp even if the flow throws synchronously inside the host
+  // detector. capturedContext gets populated by the wrapped getter below.
+  const startedAt = new Date().toISOString();
+  let capturedContext = null;
+
+  hotkeyLog.info('hotkey triggered');
+
+  const result = await syncHotkeyContextToClipboard({
     backendUrl: getBackendUrl(),
-    getFocusedTerminalContext,
+    getFocusedTerminalContext: async () => {
+      capturedContext = await getFocusedTerminalContext();
+      return capturedContext;
+    },
     fetchImpl: fetch,
     writeClipboard: (text) => clipboard.writeText(text),
     showTrayFeedback,
     showTrayProgress: (icon, tooltip) => showTrayFeedback(icon, tooltip, { reset: false }),
     showErrorNotification,
     notify: (options) => new Notification(options).show(),
-    logger: console,
+    logger: hotkeyLog,
+  });
+
+  lastHotkeyEvent = {
+    startedAt,
+    completedAt: new Date().toISOString(),
+    ok: result?.ok === true,
+    reason: result?.reason || (result?.ok ? 'success' : 'unknown'),
+    host: capturedContext?.terminalApp || null,
+    hostKind: capturedContext?.hostKind || null,
+    cwd: capturedContext?.cwd || null,
+    command: capturedContext?.command || null,
+    accessibilityDenied: capturedContext?.accessibilityDenied || false,
+    agent: result?.agent || null,
+    sessionId: result?.sessionId || null,
+    project: result?.project || null,
+  };
+
+  hotkeyLog.info('hotkey result:', lastHotkeyEvent);
+  notifyRendererOfHotkeyEvent();
+
+  return result;
+}
+
+function notifyRendererOfHotkeyEvent() {
+  const allWindows = BrowserWindow.getAllWindows();
+  for (const w of allWindows) {
+    try {
+      w.webContents.send('hotkey-event', lastHotkeyEvent);
+    } catch (err) {
+      mainLog.warn('Failed to forward hotkey event to renderer:', err.message);
+    }
+  }
+}
+
+function showLastHotkeyResultDialog() {
+  if (!lastHotkeyEvent) {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'VibeSync — Last Hotkey Result',
+      message: 'No hotkey activity recorded yet.',
+      detail: 'Press Cmd+Shift+C in a supported terminal or IDE first.',
+      buttons: ['OK'],
+    });
+    return;
+  }
+
+  const e = lastHotkeyEvent;
+  const lines = [
+    `Status: ${e.ok ? '✓ success' : '✗ failed'}`,
+    `Reason: ${e.reason}`,
+    `Started: ${e.startedAt}`,
+    `Completed: ${e.completedAt}`,
+    '',
+    `Host: ${e.host || 'unknown'} (${e.hostKind || '?'})`,
+    `Cwd: ${e.cwd || '(none)'}`,
+    `Command: ${e.command || '(none)'}`,
+  ];
+  if (e.accessibilityDenied) {
+    lines.push('', 'Accessibility: DENIED — IDE workspace detection is reduced.');
+  }
+  if (e.ok) {
+    lines.push('', `Agent: ${e.agent}`, `Session: ${e.sessionId}`, `Project: ${e.project}`);
+  }
+  dialog.showMessageBox({
+    type: e.ok ? 'info' : 'warning',
+    title: 'VibeSync — Last Hotkey Result',
+    message: e.ok ? 'Last hotkey copied a takeover prompt.' : 'Last hotkey did not copy.',
+    detail: lines.join('\n'),
+    buttons: ['OK'],
   });
 }
 
@@ -377,6 +470,7 @@ function showErrorNotification(message) {
 // ── Startup ────────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  mainLog.info('VibeSync starting up. Logs at:', logger.getLogFilePath());
   await startBackend();
 
   createWindow();
@@ -388,9 +482,9 @@ app.whenReady().then(async () => {
   });
 
   if (isRegistered) {
-    console.log(`Registered global shortcut: ${shortcutString}`);
+    mainLog.info(`Registered global shortcut: ${shortcutString}`);
   } else {
-    console.warn(`Failed to register global shortcut: ${shortcutString}`);
+    mainLog.warn(`Failed to register global shortcut: ${shortcutString}`);
     showErrorNotification(`${shortcutString} is already used by another app.`);
   }
 
@@ -405,6 +499,33 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('get-backend-status', () => {
     return { ready: backendReady, port: backendPort, url: getBackendUrl() };
+  });
+
+  ipcMain.handle('get-last-hotkey-event', () => {
+    return lastHotkeyEvent;
+  });
+
+  ipcMain.handle('open-logs', () => {
+    return shell.openPath(logger.getLogDir());
+  });
+
+  ipcMain.handle('request-accessibility', () => {
+    if (process.platform !== 'darwin') {
+      return { trusted: true, platform: process.platform };
+    }
+    // Pass `true` so macOS shows the system prompt the first time. On
+    // subsequent calls when already trusted, returns true silently.
+    const trusted = systemPreferences.isTrustedAccessibilityClient(true);
+    mainLog.info('Accessibility trust check:', trusted ? 'granted' : 'denied');
+    return { trusted, platform: 'darwin' };
+  });
+
+  ipcMain.handle('check-accessibility', () => {
+    if (process.platform !== 'darwin') {
+      return { trusted: true, platform: process.platform };
+    }
+    const trusted = systemPreferences.isTrustedAccessibilityClient(false);
+    return { trusted, platform: 'darwin' };
   });
 });
 
